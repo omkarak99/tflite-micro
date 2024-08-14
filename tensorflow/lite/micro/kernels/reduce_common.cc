@@ -124,6 +124,44 @@ TfLiteStatus PrepareMeanOrSumHelper(TfLiteContext* context, TfLiteNode* node,
   return kTfLiteOk;
 }
 
+TfLiteStatus PrepareProdHelper(TfLiteContext* context, TfLiteNode* node,
+                                    OpDataReduce* op_data) {
+  TF_LITE_ENSURE_OK(
+      context,
+      PrepareSimple(context, node, &(op_data->multiplier), &(op_data->shift)));
+  MicroContext* micro_context = GetMicroContext(context);
+  TfLiteTensor* input = micro_context->AllocateTempInputTensor(node, 0);
+  TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+  TfLiteTensor* axis = micro_context->AllocateTempInputTensor(node, 1);
+  if (input->type == kTfLiteInt8 || input->type == kTfLiteInt16) {
+    //const double real_multiplier = static_cast<double>(input->params.scale) /
+    //                               static_cast<double>(output->params.scale);
+    int reduced_axis_size = NumElements(input) / NumElements(output);
+    const double real_multiplier = static_cast<double>(input->params.scale) /
+    			   static_cast<double>(std::pow(static_cast<double>(output->params.scale), 1.0 / reduced_axis_size));
+    QuantizeMultiplier(real_multiplier, &op_data->multiplier, &op_data->shift);
+  }
+
+  int output_size = NumElements(output);
+  op_data->num_axis = NumElements(axis);
+
+  if (input->type == kTfLiteInt8 || input->type == kTfLiteInt16) {
+    context->RequestScratchBufferInArena(context, output_size * sizeof(int32_t),
+                                         &op_data->temp_buffer_idx);
+    op_data->input_zp = input->params.zero_point;
+    op_data->input_scale = input->params.scale;
+    op_data->output_zp = output->params.zero_point;
+    op_data->output_scale = output->params.scale;
+  }
+
+  // TODO(b/144955155): Support uint8_t(b/144955155) and int8_t(b/144955018)
+  micro_context->DeallocateTempTfLiteTensor(input);
+  micro_context->DeallocateTempTfLiteTensor(output);
+  micro_context->DeallocateTempTfLiteTensor(axis);
+  return kTfLiteOk;
+}
+
+
 void ResolveAxis(const int* axis_data, int axis_count,
                  tflite::MeanParams* op_params) {
   int i = 0;
@@ -327,6 +365,63 @@ TfLiteStatus EvalSumHelper(TfLiteContext* context, TfLiteNode* node,
           context->GetScratchBuffer(context, op_data->temp_buffer_idx));
       QuantizedMeanOrSum<int16_t>(context, node, temp_index, resolved_axis,
                                   temp_sum, op_data, /*compute_sum=*/true);
+    } break;
+    default:
+      MicroPrintf("Only float32, int8, and int16 types are supported.");
+      return kTfLiteError;
+  }
+  return kTfLiteOk;
+}
+
+TfLiteStatus EvalProdHelper(TfLiteContext* context, TfLiteNode* node,
+                           OpDataReduce* op_data) {
+  const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+  const TfLiteEvalTensor* axis = tflite::micro::GetEvalInput(context, node, 1);
+  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+  TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
+  TfLiteReducerParams* params =
+      static_cast<TfLiteReducerParams*>(node->builtin_data);
+
+  // Interpret an axis tensor with null dimensions as a scalar.
+  int num_axis = static_cast<int>(ElementCount(*axis->dims));
+  int temp_index[kMaxNumberOfAxis];
+  int resolved_axis[kMaxNumberOfReducedAxis];
+  int reduced_axis_size = NumElements(input->dims) / NumElements(output->dims);
+  const double real_multiplier = static_cast<double>(op_data->input_scale) /
+  				   static_cast<double>(std::pow(static_cast<double>(op_data->output_scale), 1.0 / reduced_axis_size));
+  switch (input->type) {
+    case kTfLiteFloat32: {
+      TF_LITE_ENSURE(
+          context,
+          reference_ops::ReduceGeneric<float>(
+              tflite::micro::GetTensorData<float>(input), input->dims->data,
+              input->dims->size, tflite::micro::GetTensorData<float>(output),
+              output->dims->data, output->dims->size,
+              tflite::micro::GetTensorData<int>(axis), num_axis,
+              params->keep_dims, temp_index, resolved_axis, /*init_value=*/1.f,
+              [](const float current, const float in) -> float {
+                return in * current;
+              }));
+    } break;
+    case kTfLiteInt8: {
+      QuantizeMultiplier(real_multiplier, &op_data->multiplier, &op_data->shift);
+      int32_t* temp_prod = static_cast<int32_t*>(context->GetScratchBuffer(context, op_data->temp_buffer_idx));
+      bool result = reference_ops::QuantizedReduceProd(tflite::micro::GetTensorData<int8_t>(input), op_data->input_zp, tflite::micro::GetTensorShape(input),
+							tflite::micro::GetTensorData<int8_t>(output), op_data->output_zp, tflite::micro::GetTensorShape(output),
+							tflite::micro::GetTensorData<int>(axis), op_data->num_axis,
+							params->keep_dims, temp_index, resolved_axis, temp_prod, op_data->multiplier, op_data->shift);
+      TF_LITE_ENSURE(context, result);
+	  
+    } break;
+    case kTfLiteInt16: {
+      QuantizeMultiplier(real_multiplier, &op_data->multiplier, &op_data->shift);
+      int32_t* temp_prod = static_cast<int32_t*>(context->GetScratchBuffer(context, op_data->temp_buffer_idx));
+      bool result = reference_ops::QuantizedReduceProd(tflite::micro::GetTensorData<int16_t>(input), op_data->input_zp, tflite::micro::GetTensorShape(input),
+							tflite::micro::GetTensorData<int16_t>(output), op_data->output_zp, tflite::micro::GetTensorShape(output),
+							tflite::micro::GetTensorData<int>(axis), op_data->num_axis,
+							params->keep_dims, temp_index, resolved_axis, temp_prod, op_data->multiplier, op_data->shift);
+      TF_LITE_ENSURE(context, result);
+	  
     } break;
     default:
       MicroPrintf("Only float32, int8, and int16 types are supported.");

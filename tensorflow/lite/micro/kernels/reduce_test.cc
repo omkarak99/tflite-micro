@@ -29,6 +29,7 @@ namespace {
 static const int kInputElements2D = 8;
 static int kInputShape2D[] = {2, 2, 4};
 static const float kInputData2D[] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};
+//static const float kInputData2D_1[] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
 
 static int kAxisShape2D[] = {1, 1};
 static const int32_t kAxisData2D[] = {1};
@@ -36,6 +37,10 @@ static const int32_t kAxisData2D[] = {1};
 static const int kOutputElements2D = 2;
 static int kOutputShape2D[] = {2, 1, 2};
 static const float kGoldenData2D[] = {2.5, 6.5};
+
+static const float kGoldenData2DProdFloat[] = {24.0, 1680.0};
+static const float kGoldenData2DProdInt8[] = {24.0, 127.0};
+static const float kGoldenData2DProdInt16[] = {24.0, 1680.0};
 
 static const float kGoldenDataSum2D[] = {10.0, 26.0};
 
@@ -916,6 +921,64 @@ TF_LITE_MICRO_TEST(SumFloatScalar) {
   tflite::testing::TestReduceOpFloat(
       input_shape, input_data, axis_shape, axis_data, output_shape,
       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+}
+
+TF_LITE_MICRO_TEST(ProdFloat2DKeepDims) {
+  float output_data[tflite::testing::kOutputElements2D];
+
+  TfLiteReducerParams params = {true};
+
+  tflite::testing::TestReduceOpFloat(
+      tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+      tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+      tflite::testing::kOutputShape2D, output_data,
+      tflite::testing::kGoldenData2DProdFloat, tflite::Register_REDUCE_PROD(), &params);
+}
+
+TF_LITE_MICRO_TEST(ProdInt82DKeepDims) {
+  int8_t expected_output_data_quant[tflite::testing::kOutputElements2D];
+  int8_t output_data_quant[tflite::testing::kOutputElements2D];
+  int8_t input_data_quant[tflite::testing::kInputElements2D];
+
+  float input_scale = 1.0f;
+  int input_zero_point = 0;
+  float output_scale = 1.0f;
+  int output_zero_point = 0;
+
+  TfLiteReducerParams params = {
+      true  // keep_dims
+  };
+
+  tflite::testing::TestReduceOpQuantized<int8_t>(
+      tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+      input_data_quant, input_scale, input_zero_point,
+      tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+      tflite::testing::kOutputShape2D, tflite::testing::kGoldenData2DProdInt8,
+      output_data_quant, expected_output_data_quant, output_scale,
+      output_zero_point, tflite::Register_REDUCE_PROD(), &params, 1.0);
+}
+
+TF_LITE_MICRO_TEST(ProdInt162DKeepDims) {
+  int16_t expected_output_data_quant[tflite::testing::kOutputElements2D];
+  int16_t output_data_quant[tflite::testing::kOutputElements2D];
+  int16_t input_data_quant[tflite::testing::kInputElements2D];
+
+  float input_scale = 1.0f;
+  int input_zero_point = 0;
+  float output_scale = 1.0f;
+  int output_zero_point = 0;
+
+  TfLiteReducerParams params = {
+      true  // keep_dims
+  };
+
+  tflite::testing::TestReduceOpQuantized<int16_t>(
+      tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+      input_data_quant, input_scale, input_zero_point,
+      tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+      tflite::testing::kOutputShape2D, tflite::testing::kGoldenData2DProdInt16,
+      output_data_quant, expected_output_data_quant, output_scale,
+      output_zero_point, tflite::Register_REDUCE_PROD(), &params, 1.0);
 }
 
 TF_LITE_MICRO_TESTS_END
